@@ -2,7 +2,7 @@ import os
 import json
 
 import streamlit as st
-from google import genai
+import google.generativeai as genai
 from google.genai import types
 
 MODEL_NAME = "gemini-2.5-flash"
@@ -344,4 +344,5 @@ with tab_audio:
         if "last_audio_result" in st.session_state and st.session_state.last_audio_result:
             render_risk_box(st.session_state.last_audio_result)
         else:
+
             st.info("Record a short message to see the risk analysis here.")
