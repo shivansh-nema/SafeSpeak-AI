@@ -9,7 +9,7 @@ import google.generativeai as genai
 API_KEY = st.secrets["API_KEY"]
 
 genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 headers = {
     "authorization": API_KEY,
@@ -313,4 +313,5 @@ with tab_audio:
         else:
 
             st.info("Record a short message to see the risk analysis here.")
+
 
