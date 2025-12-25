@@ -1,13 +1,16 @@
 import os
 import json
+import tempfile
 
 import streamlit as st
+import whisper
 import google.generativeai as genai
-from google.genai import types
-
-MODEL_NAME = "gemini-2.5-flash"
 
 API_KEY = st.secrets["API_KEY"]
+
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
+
 headers = {
     "authorization": API_KEY,
     "content-type": "application/json"
@@ -17,8 +20,6 @@ if not API_KEY:
     raise RuntimeError(
         "Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable."
     )
-
-client = genai.Client(api_key=API_KEY)
 
 RISK_SCHEMA = {
     "type": "OBJECT",
@@ -91,17 +92,12 @@ USER_TEXT:
 \"\"\"{text.strip()}\"\"\"
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": RISK_SCHEMA,
-        },
+    response = model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"}
     )
 
     return json.loads(response.text)
-
 
 def call_gemini_for_image(image_bytes: bytes, mime_type: str = "image/png") -> dict:
     """
@@ -138,73 +134,44 @@ Return a single JSON object with:
 Do NOT output anything except the JSON object.
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[image_part, prompt],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": RISK_SCHEMA,
-        },
+    response = model.generate_content(
+        [
+            {"mime_type": mime_type, "data": image_bytes},
+            IMAGE_PROMPT
+        ]
     )
 
     return json.loads(response.text)
 
+@st.cache_resource
+def load_whisper_model():
+    return whisper.load_model("base")
 
-def call_gemini_for_audio(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
-    """
-    Analyse a spoken voice message (content + tone) and return the same JSON structure.
+whisper_model = load_whisper_model()
 
-    The model should:
-    - Transcribe what the user is saying.
-    - Analyse meaning + tone (angry, mocking, sarcastic, calm, etc.)
-    - Compute risk_score, risk_level, categories, explanations, suggested_rewrites.
-    """
+def transcribe_audio(audio_bytes: bytes) -> str:
     if not audio_bytes:
+        return ""
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = whisper_model.transcribe(tmp_path)
+        return result.get("text", "").strip()
+    finally:
+        os.remove(tmp_path)
+
+def call_gemini_for_audio(audio_bytes: bytes) -> dict:
+    transcript = transcribe_audio(audio_bytes)
+
+    if not transcript:
         return None
 
-    audio_part = types.Part.from_bytes(
-        data=audio_bytes,
-        mime_type=mime_type or "audio/wav",
-    )
+    st.info(f"Transcribed: {transcript}")
+    return call_gemini_for_text(transcript)
 
-    prompt = """
-You are an AI ethics and safety assistant for SPOKEN social media messages (voice notes).
-
-Steps:
-1. Accurately TRANSCRIBE the speech in the audio.
-2. Analyse BOTH:
-   - The CONTENT of what is said.
-   - The TONE of the voice (angry, sarcastic, mocking, calm, threatening, etc.).
-3. Decide how risky it would be to send this as a voice message or post it online,
-   especially in sensitive contexts like religion, caste, gender, region, language,
-   or towards specific communities or individuals.
-
-Important:
-- Someone can sound aggressive even if words are neutral.
-- Sarcasm and mocking tone can make a message more hurtful.
-- Do NOT invent new slurs or add extra offensive details that are not spoken.
-
-Return a JSON object with:
-- "risk_score": number 0–100 (0 = safe, 100 = extremely harmful)
-- "risk_level": one of ["low", "medium", "high", "critical"]
-- "categories": list of short labels (e.g. ["religion", "caste", "bullying", "threat"])
-- "explanations": list of short sentences explaining the risk, including tone-related points
-- "suggested_rewrites": list of respectful, polite alternative ways to say the same thing
-  as a text message. Keep the user's main intent, but make it calm and non-hurtful.
-
-Output ONLY the JSON object, no extra text.
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[audio_part, prompt],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": RISK_SCHEMA,
-        },
-    )
-
-    return json.loads(response.text)
 
 def render_risk_box(data: dict):
     if not data:
@@ -335,7 +302,7 @@ with tab_audio:
                     audio_bytes = audio_value.read()
                     mime_type = audio_value.type or "audio/wav"
 
-                    result = call_gemini_for_audio(audio_bytes, mime_type)
+                    result = call_gemini_for_audio(audio_bytes)
                     st.session_state.last_audio_size = current_size
                     st.session_state.last_audio_result = result
                 except Exception as e:
@@ -346,3 +313,4 @@ with tab_audio:
         else:
 
             st.info("Record a short message to see the risk analysis here.")
+
